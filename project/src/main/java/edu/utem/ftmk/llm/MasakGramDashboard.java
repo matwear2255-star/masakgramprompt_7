@@ -36,7 +36,7 @@ public class MasakGramDashboard extends JFrame {
     private static final String[] TECHNIQUES = {
         "zero_shot", "few_shot", "chain_of_thought", "structured_output"
     };
-    private static final int TOTAL_TRANSCRIPTS = 50;
+    private int totalTranscripts = 0; // temporary default, overwritten by fetchTranscriptCount()
 
     private JLabel lblTotalTranscripts, lblExperimentsRun, lblSuccessRate, lblFailureRate;
     private JComboBox<String> techniqueDropdown;
@@ -71,10 +71,24 @@ public class MasakGramDashboard extends JFrame {
         setLocationRelativeTo(null);
         getContentPane().setBackground(BG_MAIN);
         setLayout(new BorderLayout());
+        fetchTranscriptCount();
         add(buildSidebar(),   BorderLayout.WEST);
         add(buildMainArea(),  BorderLayout.CENTER);
         add(buildStatusBar(), BorderLayout.SOUTH);
         refreshMatrix();
+    }
+    
+    private void fetchTranscriptCount() {
+        try {
+            ReelRequest req = new ReelRequest(0, "", "");
+            req.action = "TRANSCRIPT_COUNT";
+            ReelResponse resp = sendPacket(req);
+            if (resp != null && resp.totalTranscripts > 0) {
+                totalTranscripts = resp.totalTranscripts;
+            }
+        } catch (Exception e) {
+            System.out.println("fetchTranscriptCount error, defaulting to 50: " + e.getMessage());
+        }
     }
 
     private JPanel buildSidebar() {
@@ -518,8 +532,8 @@ public class MasakGramDashboard extends JFrame {
             BorderFactory.createEmptyBorder(10, 14, 10, 14)));
 
         // Reel ID dropdown: 1 to TOTAL_TRANSCRIPTS
-        String[] reelIds = new String[TOTAL_TRANSCRIPTS];
-        for (int i = 0; i < TOTAL_TRANSCRIPTS; i++) reelIds[i] = String.valueOf(i + 1);
+        String[] reelIds = new String[totalTranscripts];
+        for (int i = 0; i < totalTranscripts; i++) reelIds[i] = String.valueOf(i + 1);
         fsReelIdSelector = new JComboBox<>(reelIds);
         styleCombo(fsReelIdSelector);
 
@@ -855,7 +869,7 @@ public class MasakGramDashboard extends JFrame {
                             if (v.startsWith("FAILED"))    failed++;
                         }
                     }
-                    lblTotalTranscripts.setText(String.valueOf(TOTAL_TRANSCRIPTS));
+                    lblTotalTranscripts.setText(String.valueOf(totalTranscripts));
                     lblExperimentsRun.setText(String.valueOf(totalRun));
                     double sp = totalRun > 0 ? (completed * 100.0 / totalRun) : 0;
                     double fp = totalRun > 0 ? (failed    * 100.0 / totalRun) : 0;
@@ -878,7 +892,7 @@ public class MasakGramDashboard extends JFrame {
         selectedTechs.add(TECHNIQUES[runTechSelector.getSelectedIndex()]);
 
         String modelTag = MODEL_TAGS[modelSelector.getSelectedIndex()];
-        int total = TOTAL_TRANSCRIPTS * selectedTechs.size();
+        int total = totalTranscripts * selectedTechs.size();
 
         btnRunExperiment.setEnabled(false);
         btnRunExperiment.setText("Running...");
@@ -920,7 +934,7 @@ public class MasakGramDashboard extends JFrame {
                 });
 
                 // Step 2: Process each transcript 1-50
-                for (int id = 1; id <= TOTAL_TRANSCRIPTS; id++) {
+                for (int id = 1; id <= totalTranscripts; id++) {
                     final int cur = id;
                     final int run = done + fail + 1;
                     SwingUtilities.invokeLater(() ->

@@ -278,6 +278,18 @@ public class DatabaseRepository {
         } catch (Exception e) { System.out.println("getAudioDuration error: " + e.getMessage()); }
         return 0;
     }
+    
+    public int getTotalTranscriptCount() {
+        String sql = "SELECT COUNT(*) FROM transcript";
+        try (Connection conn = DatabaseConnection.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
+            if (rs.next()) return rs.getInt(1);
+        } catch (Exception e) {
+            System.out.println("getTotalTranscriptCount error: " + e.getMessage());
+        }
+        return 0;
+    }
 
     public String generateFactSheetComparison(int transcriptId, String modelTag, String techniqueName) {
         StringBuilder sb = new StringBuilder();

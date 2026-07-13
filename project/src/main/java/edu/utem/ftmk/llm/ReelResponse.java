@@ -17,6 +17,7 @@ public class ReelResponse implements Serializable {
     public String transcriptPreview;
     public String jsonOutput;
     public String status;
+    public int totalTranscripts = 0;
     public String logMessage = "";
 
     public HashMap<String, String> conditionStatuses = new HashMap<>();

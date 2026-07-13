@@ -189,6 +189,12 @@ public class MasakGramServer {
                                     responsePacket.matrixRows = dbRepo.getStatusMatrix(request.promptTechnique);
                                     break;
                                 }
+                                
+                                case "TRANSCRIPT_COUNT": {
+                                    System.out.println("\n=> TRANSCRIPT_COUNT");
+                                    responsePacket.totalTranscripts = dbRepo.getTotalTranscriptCount();
+                                    break;
+                                }
 
                                 default:
                                     System.out.println("Unknown action: " + request.action);
