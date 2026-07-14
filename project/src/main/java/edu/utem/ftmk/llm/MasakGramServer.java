@@ -6,6 +6,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.regex.Matcher;
 
 public class MasakGramServer {
@@ -40,82 +41,13 @@ public class MasakGramServer {
                                     System.out.println("\n=> ANALYZE | ID: " + request.reelId +
                                         " | Model: " + request.modelName +
                                         " | Tech: "  + request.promptTechnique);
-
-                                    // Step 1: Find pending experiment and update to RUNNING
-                                    int experimentId = dbRepo.getPendingExperimentId(
-                                        request.reelId, request.modelName, request.promptTechnique);
-                                    if (experimentId == -1) {
-                                        // No pending row found, create running one directly
-                                        experimentId = dbRepo.insertRunningExperiment(
-                                            request.reelId, request.modelName, request.promptTechnique);
-                                    } else {
-                                        dbRepo.updateExperimentStatus(experimentId, "running");
-                                    }
-                                    System.out.println("=> Experiment #" + experimentId + " status: running");
-
-                                    try {
-                                        dbRepo.loadReelMetadata(responsePacket, request.reelId);
-
-                                        String fullContent = Files.readString(
-                                            Path.of(responsePacket.transcriptFilePath),
-                                            java.nio.charset.StandardCharsets.UTF_8);
-
-                                        responsePacket.languageTag      = "Malay";
-                                        responsePacket.transcriptStatus = "SUCCESS";
-                                        for (String line : fullContent.split("\n")) {
-                                            if (line.startsWith("Language")) {
-                                                String raw = line.split(":")[1].trim();
-                                                responsePacket.languageTag =
-                                                    (raw.equalsIgnoreCase("ms") || raw.equalsIgnoreCase("code-switched"))
-                                                        ? "code-switched"
-                                                        : raw.equalsIgnoreCase("en") ? "English" : "Malay";
-                                            } else if (line.startsWith("Status")) {
-                                                responsePacket.transcriptStatus = line.split(":")[1].trim();
-                                            }
-                                        }
-
-                                        responsePacket.videoDuration = dbRepo.getAudioDuration(request.reelId);
-
-                                        String transcriptText = fullContent.contains("=====================================")
-                                            ? fullContent.split("=====================================")[1].trim()
-                                            : fullContent;
-                                        responsePacket.transcriptPreview = transcriptText;
-
-                                        String systemPrompt       = Files.readString(Path.of("prompts/" + request.promptTechnique + "_system.txt"));
-                                        String userPromptTemplate = Files.readString(Path.of("prompts/" + request.promptTechnique + "_user.txt"));
-                                        String finalUserPrompt    = userPromptTemplate.replaceAll(
-                                            "(?i)\\{\\{\\s*transcript\\s*\\}\\}",
-                                            Matcher.quoteReplacement(transcriptText));
-
-                                        System.out.println("=> Calling Ollama...");
-                                        System.out.println("=> Calling Ollama...");
-                                        try {
-                                            responsePacket.jsonOutput = llmService.prompt(
-                                                request.modelName, systemPrompt + "\n\n" + finalUserPrompt);
-                                        } catch (Exception ollamaEx) {
-                                            System.out.println("=> Ollama failed for ID " + request.reelId + ": " + ollamaEx.getMessage());
-                                            dbRepo.updateExperimentStatus(experimentId, "failed");
-                                            throw ollamaEx; // re-throw so the outer catch handles the response
-                                        }
-
-                                        System.out.println("=> Saving to DB...");
-                                        // Step 2: Save results with existing experiment_id
-                                        dbRepo.saveExperimentResultsWithId(
-                                            experimentId, request.reelId, request.modelName,
-                                            request.promptTechnique, responsePacket.jsonOutput);
-
-                                        // Step 3: Update to COMPLETED
-                                        dbRepo.updateExperimentStatus(experimentId, "completed");
-                                        System.out.println("=> Experiment #" + experimentId + " status: completed");
-
+                                    boolean ok = processOneTranscript(request, dbRepo, llmService, responsePacket);
+                                    responsePacket.status = ok ? "Success" : "Failed";
+                                    if (ok) {
                                         responsePacket.logMessage = "[ID " + request.reelId + "] OK " +
                                             request.promptTechnique + " | " + request.modelName + " | JSON saved";
-
-                                    } catch (Exception analyzeEx) {
-                                        // Update to FAILED if anything goes wrong
-                                        dbRepo.updateExperimentStatus(experimentId, "failed");
-                                        System.out.println("=> Experiment #" + experimentId + " status: failed — " + analyzeEx.getMessage());
-                                        throw analyzeEx;
+                                    } else {
+                                        responsePacket.logMessage = "[ID " + request.reelId + "] FAILED";
                                     }
                                     break;
                                 }
@@ -184,12 +116,31 @@ public class MasakGramServer {
                                     break;
                                 }
 
+                                case "RUN_BATCH_ALL": {
+                                    System.out.println("\n=> RUN_BATCH_ALL | Model: " + request.modelName + " | Tech: " + request.promptTechnique);
+                                    dbRepo.insertAllPendingExperiments(request.modelName, request.promptTechnique);
+                                    List<Integer> ids = dbRepo.getAllTranscriptIds();
+                                    int success = 0, failed = 0;
+                                    for (int id : ids) {
+                                        ReelRequest singleReq = new ReelRequest(id, request.modelName, request.promptTechnique);
+                                        ReelResponse tempResp = new ReelResponse();
+                                        boolean ok = processOneTranscript(singleReq, dbRepo, llmService, tempResp);
+                                        if (ok) success++; else failed++;
+                                        System.out.println("[ID " + id + "] " + (ok ? "OK" : "FAILED") +
+                                            " (" + (success + failed) + "/" + ids.size() + ")");
+                                    }
+                                    responsePacket.batchTotal   = ids.size();
+                                    responsePacket.batchSuccess = success;
+                                    responsePacket.batchFailed  = failed;
+                                    break;
+                                }
+
                                 case "STATUS_MATRIX": {
                                     System.out.println("\n=> STATUS_MATRIX | Technique: " + request.promptTechnique);
                                     responsePacket.matrixRows = dbRepo.getStatusMatrix(request.promptTechnique);
                                     break;
                                 }
-                                
+
                                 case "TRANSCRIPT_COUNT": {
                                     System.out.println("\n=> TRANSCRIPT_COUNT");
                                     responsePacket.totalTranscripts = dbRepo.getTotalTranscriptCount();
@@ -223,5 +174,77 @@ public class MasakGramServer {
             }
 
         } catch (Exception e) { e.printStackTrace(); }
+    }
+
+    private static boolean processOneTranscript(ReelRequest request, DatabaseRepository dbRepo,
+                                                 LLMService llmService, ReelResponse responsePacket) {
+        int experimentId = dbRepo.getPendingExperimentId(
+            request.reelId, request.modelName, request.promptTechnique);
+        if (experimentId == -1) {
+            experimentId = dbRepo.insertRunningExperiment(
+                request.reelId, request.modelName, request.promptTechnique);
+        } else {
+            dbRepo.updateExperimentStatus(experimentId, "running");
+        }
+        System.out.println("=> Experiment #" + experimentId + " status: running");
+
+        try {
+            dbRepo.loadReelMetadata(responsePacket, request.reelId);
+
+            String fullContent = Files.readString(
+                Path.of(responsePacket.transcriptFilePath),
+                java.nio.charset.StandardCharsets.UTF_8);
+
+            responsePacket.languageTag      = "Malay";
+            responsePacket.transcriptStatus = "SUCCESS";
+            for (String line : fullContent.split("\n")) {
+                if (line.startsWith("Language")) {
+                    String raw = line.split(":")[1].trim();
+                    responsePacket.languageTag =
+                        (raw.equalsIgnoreCase("ms") || raw.equalsIgnoreCase("code-switched"))
+                            ? "code-switched"
+                            : raw.equalsIgnoreCase("en") ? "English" : "Malay";
+                } else if (line.startsWith("Status")) {
+                    responsePacket.transcriptStatus = line.split(":")[1].trim();
+                }
+            }
+
+            responsePacket.videoDuration = dbRepo.getAudioDuration(request.reelId);
+
+            String transcriptText = fullContent.contains("=====================================")
+                ? fullContent.split("=====================================")[1].trim()
+                : fullContent;
+            responsePacket.transcriptPreview = transcriptText;
+
+            String systemPrompt       = Files.readString(Path.of("prompts/" + request.promptTechnique + "_system.txt"));
+            String userPromptTemplate = Files.readString(Path.of("prompts/" + request.promptTechnique + "_user.txt"));
+            String finalUserPrompt    = userPromptTemplate.replaceAll(
+                "(?i)\\{\\{\\s*transcript\\s*\\}\\}",
+                Matcher.quoteReplacement(transcriptText));
+
+            System.out.println("=> Calling Ollama...");
+            try {
+                responsePacket.jsonOutput = llmService.prompt(
+                    request.modelName, systemPrompt + "\n\n" + finalUserPrompt);
+            } catch (Exception ollamaEx) {
+                System.out.println("=> Ollama failed for ID " + request.reelId + ": " + ollamaEx.getMessage());
+                dbRepo.updateExperimentStatus(experimentId, "failed");
+                throw ollamaEx;
+            }
+
+            System.out.println("=> Saving to DB...");
+            dbRepo.saveExperimentResultsWithId(
+                experimentId, request.reelId, request.modelName,
+                request.promptTechnique, responsePacket.jsonOutput);
+
+            dbRepo.updateExperimentStatus(experimentId, "completed");
+            System.out.println("=> Experiment #" + experimentId + " status: completed");
+            return true;
+
+        } catch (Exception analyzeEx) {
+            dbRepo.updateExperimentStatus(experimentId, "failed");
+            System.out.println("=> Experiment #" + experimentId + " status: failed — " + analyzeEx.getMessage());
+            return false;
+        }
     }
 }

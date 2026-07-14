@@ -290,6 +290,19 @@ public class DatabaseRepository {
         }
         return 0;
     }
+    
+    public List<Integer> getAllTranscriptIds() {
+        List<Integer> ids = new ArrayList<>();
+        String sql = "SELECT transcript_id FROM transcript ORDER BY transcript_id";
+        try (Connection conn = DatabaseConnection.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) ids.add(rs.getInt("transcript_id"));
+        } catch (Exception e) {
+            System.out.println("getAllTranscriptIds error: " + e.getMessage());
+        }
+        return ids;
+    }
 
     public String generateFactSheetComparison(int transcriptId, String modelTag, String techniqueName) {
         StringBuilder sb = new StringBuilder();

@@ -36,7 +36,7 @@ public class MasakGramDashboard extends JFrame {
     private static final String[] TECHNIQUES = {
         "zero_shot", "few_shot", "chain_of_thought", "structured_output"
     };
-    private int totalTranscripts = 0; // temporary default, overwritten by fetchTranscriptCount()
+    private int totalTranscripts = 0; // overwritten by fetchTranscriptCount()
 
     private JLabel lblTotalTranscripts, lblExperimentsRun, lblSuccessRate, lblFailureRate;
     private JComboBox<String> techniqueDropdown;
@@ -77,7 +77,7 @@ public class MasakGramDashboard extends JFrame {
         add(buildStatusBar(), BorderLayout.SOUTH);
         refreshMatrix();
     }
-    
+
     private void fetchTranscriptCount() {
         try {
             ReelRequest req = new ReelRequest(0, "", "");
@@ -87,7 +87,7 @@ public class MasakGramDashboard extends JFrame {
                 totalTranscripts = resp.totalTranscripts;
             }
         } catch (Exception e) {
-            System.out.println("fetchTranscriptCount error, defaulting to 50: " + e.getMessage());
+            System.out.println("fetchTranscriptCount error: " + e.getMessage());
         }
     }
 
@@ -180,7 +180,7 @@ public class MasakGramDashboard extends JFrame {
         g.insets = new Insets(8, 8, 8, 8);
         g.anchor = GridBagConstraints.WEST;
         g.gridx = 0; g.gridy = 0; g.gridwidth = 5;
-        JLabel allInfo = new JLabel("All 50 transcripts will be processed in sequence");
+        JLabel allInfo = new JLabel("All transcripts in the database will be processed in sequence");
         allInfo.setForeground(ACCENT_BLUE);
         allInfo.setFont(new Font("SansSerif", Font.BOLD, 12));
         config.add(allInfo, g);
@@ -531,7 +531,7 @@ public class MasakGramDashboard extends JFrame {
             BorderFactory.createLineBorder(BORDER_COLOR),
             BorderFactory.createEmptyBorder(10, 14, 10, 14)));
 
-        // Reel ID dropdown: 1 to TOTAL_TRANSCRIPTS
+        // Reel ID dropdown: 1 to totalTranscripts (dynamic, from database)
         String[] reelIds = new String[totalTranscripts];
         for (int i = 0; i < totalTranscripts; i++) reelIds[i] = String.valueOf(i + 1);
         fsReelIdSelector = new JComboBox<>(reelIds);
@@ -885,99 +885,56 @@ public class MasakGramDashboard extends JFrame {
     }
 
     // =========================================================
-    // EXECUTE BATCH — all 50 transcripts, pending -> running -> completed
+    // EXECUTE BATCH — server decides how many transcripts to run,
+    // based on what's actually in the database (not a hardcoded number)
     // =========================================================
     private void executeBatch() {
-        List<String> selectedTechs = new ArrayList<>();
-        selectedTechs.add(TECHNIQUES[runTechSelector.getSelectedIndex()]);
-
-        String modelTag = MODEL_TAGS[modelSelector.getSelectedIndex()];
-        int total = totalTranscripts * selectedTechs.size();
+        String modelTag  = MODEL_TAGS[modelSelector.getSelectedIndex()];
+        String technique = TECHNIQUES[runTechSelector.getSelectedIndex()];
 
         btnRunExperiment.setEnabled(false);
         btnRunExperiment.setText("Running...");
-        progressBar.setForeground(ACCENT_GREEN);
-        progressBar.setMaximum(total);
-        progressBar.setValue(0);
-        progressBar.setString("0 / " + total);
+        progressBar.setIndeterminate(true);
+        progressBar.setString("Running on server...");
 
         // Switch to matrix immediately
         cardLayout.show(contentPanel, "MATRIX");
 
-        // Auto-refresh matrix every 3 seconds during batch
+        // Auto-refresh matrix every 3 seconds while the server works through the batch
         autoRefreshTimer = new javax.swing.Timer(3000, e -> refreshMatrix());
         autoRefreshTimer.start();
 
         new Thread(() -> {
-            int done = 0, fail = 0;
-            for (String tech : selectedTechs) {
-                final String currentTech = tech;
+            try {
+                ReelRequest req = new ReelRequest(0, modelTag, technique);
+                req.action = "RUN_BATCH_ALL";
+                ReelResponse resp = sendPacket(req);
 
-                // Step 1: Insert all 50 as PENDING in DB for this technique
-                System.out.println("Inserting pending experiments for " + modelTag + " / " + currentTech);
-                try {
-                    ReelRequest pendingReq = new ReelRequest(0, modelTag, currentTech);
-                    pendingReq.action = "PENDING_BATCH";
-                    sendPacket(pendingReq);
-                } catch (Exception ex) {
-                    System.out.println("PENDING_BATCH error: " + ex.getMessage());
-                }
-
-                // Sync technique dropdown
                 SwingUtilities.invokeLater(() -> {
-                    for (int i = 0; i < TECHNIQUES.length; i++) {
-                        if (TECHNIQUES[i].equals(currentTech)) {
-                            techniqueDropdown.setSelectedIndex(i);
-                            break;
-                        }
-                    }
+                    if (autoRefreshTimer != null) autoRefreshTimer.stop();
+                    progressBar.setIndeterminate(false);
+                    progressBar.setMaximum(Math.max(resp.batchTotal, 1));
+                    progressBar.setValue(resp.batchTotal);
+                    progressBar.setString("Done: " + resp.batchSuccess + "/" + resp.batchTotal +
+                        (resp.batchFailed > 0 ? "  (" + resp.batchFailed + " failed)" : "  All complete!"));
+                    progressBar.setForeground(resp.batchFailed > 0 ? ACCENT_AMBER : ACCENT_GREEN);
+                    btnRunExperiment.setEnabled(true);
+                    btnRunExperiment.setText("  Run Batch Pipeline");
+                    statusBarLabel.setText("Done — " + resp.batchSuccess + " succeeded, " + resp.batchFailed + " failed");
+                    refreshMatrix();
+                    JOptionPane.showMessageDialog(MasakGramDashboard.this,
+                        "Batch complete!\nSucceeded: " + resp.batchSuccess + "\nFailed: " + resp.batchFailed,
+                        "Result", JOptionPane.INFORMATION_MESSAGE);
                 });
-
-                // Step 2: Process each transcript 1-50
-                for (int id = 1; id <= totalTranscripts; id++) {
-                    final int cur = id;
-                    final int run = done + fail + 1;
-                    SwingUtilities.invokeLater(() ->
-                        statusBarLabel.setText("Running ID " + cur + " [" + run + "/" + total + "] | " + currentTech + " | " + modelTag));
-                    try {
-                        SwingUtilities.invokeLater(() -> refreshMatrix());
-                        ReelRequest req = new ReelRequest(id, modelTag, currentTech);
-                        req.action = "ANALYZE";
-                        ReelResponse resp = sendPacket(req);
-                        if ("Failed".equals(resp.status)) {
-                            fail++;
-                            final String log = "[ID " + id + "] FAILED: " + resp.jsonOutput;
-                            SwingUtilities.invokeLater(() -> System.out.println(log));
-                        } else {
-                            done++;
-                            final String log = resp.logMessage.isEmpty() ? "[ID " + id + "] OK" : resp.logMessage;
-                            SwingUtilities.invokeLater(() -> System.out.println(log));
-                        }
-                    } catch (Exception ex) {
-                        fail++;
-                        System.out.println("[ID " + id + "] ERROR: " + ex.getMessage());
-                    }
-                    final int prog = done + fail, d = done, f = fail;
-                    SwingUtilities.invokeLater(() -> {
-                        progressBar.setValue(prog);
-                        progressBar.setString(prog + "/" + total + "  OK:" + d + "  FAIL:" + f);
-                    });
-                }
+            } catch (Exception ex) {
+                SwingUtilities.invokeLater(() -> {
+                    if (autoRefreshTimer != null) autoRefreshTimer.stop();
+                    progressBar.setIndeterminate(false);
+                    btnRunExperiment.setEnabled(true);
+                    btnRunExperiment.setText("  Run Batch Pipeline");
+                    statusBarLabel.setText("Batch error: " + ex.getMessage());
+                });
             }
-            final int fd = done, ff = fail;
-            SwingUtilities.invokeLater(() -> {
-                if (autoRefreshTimer != null) autoRefreshTimer.stop();
-                btnRunExperiment.setEnabled(true);
-                btnRunExperiment.setText("  Run Batch Pipeline");
-                progressBar.setValue(total);
-                progressBar.setString("Done: " + fd + "/" + total + (ff > 0 ? "  (" + ff + " failed)" : "  All complete!"));
-                progressBar.setForeground(ff > 0 ? ACCENT_AMBER : ACCENT_GREEN);
-                statusBarLabel.setText("Done — " + fd + " succeeded, " + ff + " failed");
-                refreshMatrix();
-                JOptionPane.showMessageDialog(MasakGramDashboard.this,
-                    "Batch complete!\nSucceeded: " + fd + "\nFailed: " + ff,
-                    "Result", JOptionPane.INFORMATION_MESSAGE);
-            });
         }).start();
     }
 
